@@ -1,105 +1,107 @@
 #include <WiFi.h>
-#include <UniversalTelegramBot.h>
 #include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+#include <DHT.h>
 
-// Configuraciones WiFi y Telegram
-const char* ssid = "Personal-5B3-2.4GHz"; // Con tu SSID
-const char* password = "9114DEA5B3"; // Tu contraseña
+// Configuración de red WiFi
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+const char* chatId = "tu_chat_id";
 
-const char* telegramToken = "7126983538:AAEo66DMT49mDPm-Aa1_IMp3G8E_1w5cdGA";
-const char* chatId = "924578095";
-
-// Intervalo de envío de datos
-unsigned long lastSendTime = 0;
-const unsigned long sendInterval = 300000; // 5 minutos en milisegundos
-
-// Pines
-const int ledPin = 2; // LED integrado para simular el motor
-
+// Configuración del bot de Telegram
+#define BOT_TOKEN "7211031772:AAEeW7VskINFGisF3GMdapLfyyOi3YjbWis"
 WiFiClientSecure client;
-UniversalTelegramBot bot(telegramToken, client);
+UniversalTelegramBot bot(BOT_TOKEN, client);
 
-bool ventanasAbiertas = false;
+// Pin del LED integrado
+const int ledPin = 2;
 
+// Configuración del sensor de temperatura
+#define DHTPIN 4     // Pin donde está conectado el DHT11/22
+#define DHTTYPE DHT22   // Cambia a DHT11 si estás usando ese modelo
+DHT dht(DHTPIN, DHTTYPE);
+
+// Variables de control
+float temperature;
+float humidity;
+bool windowsOpen = false;
+unsigned long lastTempCheck = 0;
+unsigned long tempCheckInterval = 30000; // 5 minutos en milisegundos
+
+// Función para leer temperatura y humedad del sensor DHT
+void readTemperatureAndHumidity() {
+  temperature = dht.readTemperature();
+  humidity = dht.readHumidity();
+
+  if (isnan(temperature) || isnan(humidity)) {
+    Serial.println("Error leyendo del sensor DHT");
+  }
+}
+
+// Función para controlar el LED (motor)
+void controlMotor(bool open) {
+  digitalWrite(ledPin, HIGH);
+  delay(10000); // Simula 10 segundos de operación del motor
+  digitalWrite(ledPin, LOW);
+  windowsOpen = open;
+}
+
+// Función para enviar notificaciones al bot
+void sendNotification(String message) {
+  bot.sendMessage(chatId, message, "");
+}
+
+// Setup
 void setup() {
   Serial.begin(115200);
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, LOW);
-
-  // Conexión WiFi
-  WiFi.begin(ssid, password);
+  WiFi.begin(ssid, password, 6); // Wokwi-GUEST es una red de prueba, cámbiala por la tuya
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
-    Serial.println("Conectando a WiFi...");
+    Serial.print(".");
   }
-  Serial.println("Conectado a WiFi");
+  Serial.println(" Conectado!");
+
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
+  dht.begin();
 
   // Configuración del cliente seguro
   client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Necesario para SSL
 
   // Notificación de inicio
-  bot.sendMessage(chatId, "Sistema de ventilación del invernadero iniciado.", "");
+  sendNotification("Sistema de ventilación del invernadero iniciado.");
 }
 
+// Loop
 void loop() {
-  // Simular la lectura del sensor de temperatura
-  float temperatura = random(15, 35);
 
-  // Verificar y controlar las ventanas
-  if (temperatura > 30 && !ventanasAbiertas) {
-    abrirVentanas();
-  } else if (temperatura < 20 && ventanasAbiertas) {
-    cerrarVentanas();
+  readTemperatureAndHumidity();
+
+  if (temperature > 30 && !windowsOpen) {
+    sendNotification("Temperatura: " + String(temperature) + "°. Iniciando apertura!");
+    controlMotor(true);
+  } else if (temperature < 20 && windowsOpen) {
+    sendNotification("Temperatura: " + String(temperature) + "°. Iniciando cierre!");
+    controlMotor(false);
   }
-
-  // Enviar datos regularmente
-  if (millis() - lastSendTime > sendInterval) {
-    enviarDatos(temperatura);
-    lastSendTime = millis();
+    
+  // Lectura de temperatura cada 30 minutos
+  if (millis() - lastTempCheck > tempCheckInterval) {
+    lastTempCheck = millis();
+    sendNotification("Temperatura: " + String(temperature) + "°. Ventanas " + (windowsOpen ? "abiertas" : "cerradas") + ".");
   }
-
-  // Verificar comandos de Telegram
+  
+  // Manejo de comandos de Telegram
   int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-  while (numNewMessages) {
-    handleNewMessages(numNewMessages);
-    numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-  }
-
-  delay(1000);
-}
-
-void abrirVentanas() {
-  digitalWrite(ledPin, HIGH);
-  delay(10000); // Simula el tiempo de activación del motor
-  digitalWrite(ledPin, LOW);
-  ventanasAbiertas = true;
-  bot.sendMessage(chatId, "Ventanas abiertas.", "");
-}
-
-void cerrarVentanas() {
-  digitalWrite(ledPin, HIGH);
-  delay(10000); // Simula el tiempo de activación del motor
-  digitalWrite(ledPin, LOW);
-  ventanasAbiertas = false;
-  bot.sendMessage(chatId, "Ventanas cerradas.", "");
-}
-
-void enviarDatos(float temperatura) {
-  String estadoVentanas = ventanasAbiertas ? "abiertas" : "cerradas";
-  String mensaje = "Temperatura: " + String(temperatura) + "°C\n";
-  mensaje += "Ventanas: " + estadoVentanas;
-  bot.sendMessage("your_telegram_chat_id", mensaje, "");
-}
-
-void handleNewMessages(int numNewMessages) {
   for (int i = 0; i < numNewMessages; i++) {
-    String chat_id = String(bot.messages[i].chat_id);
     String text = bot.messages[i].text;
-
-    if (text == "/abrir") {
-      abrirVentanas();
-    } else if (text == "/cerrar") {
-      cerrarVentanas();
+    if (text == "/abrir" && !windowsOpen) {
+      sendNotification("Comando recibido: /abrir. Iniciando apertura!");
+      controlMotor(true);
+    } else if (text == "/cerrar" && windowsOpen) {
+      sendNotification("Comando recibido: /cerrar. Iniciando cierre!");
+      controlMotor(false);
     }
   }
 }
